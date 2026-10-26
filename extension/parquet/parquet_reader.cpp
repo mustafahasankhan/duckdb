@@ -2342,10 +2342,6 @@ ParquetPrefetchStrategy ParquetReader::ColumnWisePrefetch(ParquetReaderScanState
 			//! Column reader is skipped entirely
 			continue;
 		}
-		if (child.IsSkipped() && has_non_optional_filter && !lazy_fetch) {
-			// fetching before the filter: keep reading nested columns only when needed, the filter may remove every row
-			continue;
-		}
 		bool fetched_by_filter = true;
 		for (auto column_chunk : column_chunks) {
 			if (filter_chunks.find(column_chunk) == filter_chunks.end()) {
