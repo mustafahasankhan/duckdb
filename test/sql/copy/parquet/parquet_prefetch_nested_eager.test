@@ -1,0 +1,78 @@
+# name: test/sql/copy/parquet/parquet_prefetch_nested_eager.test
+# description: The eager column-wise prefetch with a filter also fetches nested columns
+# group: [parquet]
+
+require parquet
+
+require noforcestorage
+
+statement ok
+SET threads=1
+
+# the list page is larger than the 1,000,000 byte fallback read, and pad is never read
+statement ok
+COPY (
+    SELECT CASE WHEN i % 4 = 0 THEN 'match' ELSE 'other' END AS f,
+        [md5(i::VARCHAR), md5((i + 1)::VARCHAR), md5((i + 2)::VARCHAR), md5((i + 3)::VARCHAR),
+         md5((i + 4)::VARCHAR), md5((i + 5)::VARCHAR), md5((i + 6)::VARCHAR), md5((i + 7)::VARCHAR)] AS l,
+        md5((i + 8)::VARCHAR) AS pad
+    FROM range(8192) t(i)
+) TO '{TEST_DIR}/prefetch_nested_eager.parquet' (ROW_GROUP_SIZE 8192, COMPRESSION 'uncompressed')
+
+statement ok
+SET enable_external_file_cache=false
+
+statement ok
+CALL enable_logging(['FileSystem', 'ParquetPrefetch'])
+
+query II
+SELECT count(*), sum(len(l)) FROM read_parquet('{TEST_DIR}/prefetch_nested_eager.parquet') WHERE f = 'match'
+----
+2048	16384
+
+# the list column is fetched with the filter column
+query TT
+SELECT strategy, prefetch_groups FROM duckdb_logs_parsed('ParquetPrefetch')
+WHERE file_path LIKE '%prefetch_nested_eager.parquet'
+----
+column_wise_eager	[[f, l.list.element]]
+
+# no read falls back to a 1,000,000 byte read, and no byte of f or l is read twice
+query II
+SELECT count(*) FILTER (WHERE bytes = 1000000), bool_and(pos >= prev_end)
+FROM (
+    SELECT pos, bytes, lag(pos + bytes, 1, 0) OVER (ORDER BY pos) AS prev_end
+    FROM duckdb_logs_parsed('FileSystem')
+    WHERE path LIKE '%prefetch_nested_eager.parquet' AND op = 'READ' AND pos < (
+        SELECT data_page_offset FROM parquet_metadata('{TEST_DIR}/prefetch_nested_eager.parquet')
+        WHERE path_in_schema = 'pad'
+    )
+)
+----
+0	true
+
+# with the external file cache, the second scan reads nothing from the file
+statement ok
+SET enable_external_file_cache=true
+
+statement ok
+SET cache_local_files=true
+
+query II
+SELECT count(*), sum(len(l)) FROM read_parquet('{TEST_DIR}/prefetch_nested_eager.parquet') WHERE f = 'match'
+----
+2048	16384
+
+statement ok
+CALL truncate_duckdb_logs()
+
+query II
+SELECT count(*), sum(len(l)) FROM read_parquet('{TEST_DIR}/prefetch_nested_eager.parquet') WHERE f = 'match'
+----
+2048	16384
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%prefetch_nested_eager.parquet' AND op = 'READ'
+----
+0

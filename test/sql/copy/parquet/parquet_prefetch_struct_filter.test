@@ -83,8 +83,7 @@ WHERE file_path LIKE '%struct_filter.parquet' ORDER BY row_group_id
 statement ok
 CALL truncate_duckdb_logs()
 
-# when columns are fetched before the filter, struct columns are still read only when needed
-# nothing matches, so p is never fetched in the first row group
+# when columns are fetched before the filter, struct columns are fetched with them, like flat columns
 statement ok
 SELECT bit_xor(hash(p)) FROM read_parquet('{TEST_DIR}/struct_filter.parquet') WHERE s.login = 'mmm'
 
@@ -92,7 +91,7 @@ query ITTT
 SELECT row_group_id, fully_filtered, strategy, prefetch_groups FROM duckdb_logs_parsed('ParquetPrefetch')
 WHERE file_path LIKE '%struct_filter.parquet' ORDER BY row_group_id
 ----
-0	true	column_wise_eager	[[s.login]]
+0	true	column_wise_eager	[[s.login], [p.body]]
 1	true	prefetch_filters	[[s.login], [p.body]]
 
 statement ok
